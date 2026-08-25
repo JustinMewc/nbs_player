@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NBS → MIDI 转换器</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #e0e0e0;
+  padding: 20px;
+}
+.container {
+  background: rgba(255,255,255,0.05);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 20px;
+  padding: 40px;
+  width: 100%;
+  max-width: 680px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+h1 {
+  text-align: center;
+  font-size: 28px;
+  margin-bottom: 10px;
+  background: linear-gradient(90deg, #4fc3f7, #81d4fa, #29b6f6);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.subtitle {
+  text-align: center;
+  color: #888;
+  font-size: 14px;
+  margin-bottom: 30px;
+}
+.drop-zone {
+  border: 2px dashed rgba(255,255,255,0.25);
+  border-radius: 14px;
+  padding: 50px 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  margin-bottom: 20px;
+}
+.drop-zone:hover, .drop-zone.drag-over {
+  border-color: #4fc3f7;
+  background: rgba(79,195,247,0.08);
+}
+.drop-zone .icon { font-size: 48px; margin-bottom: 12px; }
+.drop-zone p { color: #aaa; font-size: 15px; }
+.drop-zone .hint { color: #666; font-size: 12px; margin-top: 6px; }
+#fileInput { display: none; }
+.info-panel {
+  display: none;
+  background: rgba(0,0,0,0.25);
+  border-radius: 12px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+.info-panel.show { display: block; }
+.song-title {
+  font-size: 20px;
+  font-weight: bold;
+  color: #4fc3f7;
+  margin-bottom: 4px;
+}
+.song-artist { color: #aaa; font-size: 14px; margin-bottom: 12px; }
+.song-meta {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  color: #888;
+  font-size: 13px;
+}
+.meta-item { display: flex; align-items: center; gap: 4px; }
+.status {
+  text-align: center;
+  color: #666;
+  font-size: 13px;
+  min-height: 20px;
+  margin-top: 12px;
+}
+.status.error { color: #ef5350; }
+.status.success { color: #66bb6a; }
+.error-panel {
+  display: none;
+  background: rgba(239,83,80,0.15);
+  border: 1px solid rgba(239,83,80,0.3);
+  border-radius: 10px;
+  padding: 14px;
+  color: #ef5350;
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+.error-panel.show { display: block; }
+.export-btn {
+  display: none;
+  width: 100%;
+  padding: 12px;
+  border: 1px solid rgba(79,195,247,0.4);
+  border-radius: 10px;
+  background: rgba(79,195,247,0.12);
+  color: #4fc3f7;
+  font-size: 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  margin-bottom: 16px;
+  font-family: inherit;
+}
+.export-btn.show { display: block; }
+.export-btn:hover { background: rgba(79,195,247,0.25); }
+.export-btn:active { transform: scale(0.98); }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🎼 NBS → MIDI 转换器</h1>
+  <p class="subtitle">导入 Note Block Studio 歌曲文件（.nbs），一键导出标准 MIDI</p>
+
+  <div class="error-panel" id="errorPanel"></div>
+
+  <div class="drop-zone" id="dropZone">
+    <div class="icon">📂</div>
+    <p>点击选择或拖拽 .nbs 文件到此处</p>
+    <p class="hint">支持 NBS 格式（Note Block Studio 音符盒歌曲）</p>
+  </div>
+  <input type="file" id="fileInput" accept=".nbs">
+
+  <div class="info-panel" id="infoPanel">
+    <div class="song-title" id="songTitle">未命名</div>
+    <div class="song-artist" id="songArtist">未知作者</div>
+    <div class="song-meta">
+      <div class="meta-item">⏱ <span id="metaDuration">--:--</span></div>
+      <div class="meta-item">🎼 <span id="metaNotes">0</span> 个音符</div>
+      <div class="meta-item">🥁 <span id="metaInstruments">0</span> 种乐器</div>
+      <div class="meta-item">🎚 <span id="metaTempo">--</span> TPS</div>
+      <div class="meta-item">📄 NBS v<span id="metaVersion">-</span></div>
+    </div>
+  </div>
+
+  <button class="export-btn" id="btnExport" title="导出为 MIDI 文件">⬇ 导出 MIDI 文件 (.mid)</button>
+
+  <div class="status" id="status"></div>
+</div>
+
+<script>
+"use strict";
+// ============ NBS 解析器（依据官方规范 v5，兼容 v0-v4） ============
+class NBSParser {
+  constructor(buffer) {
+    this.view = new DataView(buffer);
+    this.pos = 0;
+  }
+  readByte() { const v = this.view.getUint8(this.pos); this.pos += 1; return v; }
+  readShort() { const v = this.view.getInt16(this.pos, true); this.pos += 2; return v; }
+  readInt() { const v = this.view.getInt32(this.pos, true); this.pos += 4; return v; }
+  readString() {
+    const len = this.readInt();
+    if (len <= 0 || this.pos + len > this.view.byteLength) return "";
+    const bytes = new Uint8Array(this.view.buffer, this.pos, len);
+    this.pos += len;
+    try { return new TextDecoder("utf-8").decode(bytes); } catch(e) { return ""; }
+  }
+
+  parse() {
+    const firstShort = this.readShort();
+    let version = 0;
+    if (firstShort === 0) version = this.readByte(); // 新格式
+
+    let name = "", author = "", origAuthor = "", description = "";
+    let tempo = 1000;        // tempo = 每秒tick数 * 100
+    let headerLen = 0, layerCount = 0;
+
+    if (version === 0) {
+      // 经典格式：元数据在音符和层之后
+      headerLen = firstShort;
+    } else {
+      this.readByte();                       // 原版乐器数量
+      if (version >= 3) headerLen = this.readShort(); // 歌曲长度（v3 起重新保存）
+      layerCount = this.readShort();         // 层数
+      name = this.readString();              // 歌名
+      author = this.readString();            // 作者
+      origAuthor = this.readString();        // 原作者
+      description = this.readString();       // 描述
+      tempo = this.readShort();              // 速度
+      this.readByte();                       // 自动保存
+      this.readByte();                       // 自动保存间隔
+      this.readByte();                       // 拍号
+      this.readInt(); this.readInt(); this.readInt(); this.readInt(); this.readInt();
+      // ↑ 分钟数 / 左键 / 右键 / 添加音符 / 删除音符（5个int，所有新版本均有）
+      this.readString();                     // MIDI/原理图源文件名
+      if (version >= 4) {
+        this.readByte();                     // 循环开关
+        this.readByte();                     // 最大循环次数
+        this.readShort();                    // 循环起始tick
+      }
+    }
+
+    // ---- 音符（新旧格式结构相同；v>=4 音符带力度/声像/微调音高）----
+    const notes = [];
+    let tick = -1;
+    while (this.pos + 2 <= this.view.byteLength) {
+      const tickJump = this.readShort();
+      if (tickJump === 0) break;
+      tick += tickJump;
+      let layer = -1;
+      while (this.pos + 2 <= this.view.byteLength) {
+        const layerJump = this.readShort();  // 垂直跳到下一个有音符的层
+        if (layerJump === 0) break;
+        layer += layerJump;
+        if (this.pos + 2 > this.view.byteLength) break;
+        const instrument = this.readByte();
+        const key = this.readByte();         // 0=A0 ~ 87=C8，45=F#4
+        let velocity = 100, panning = 100, pitch = 0;
+        if (version >= 4) {
+          if (this.pos + 4 > this.view.byteLength) break;
+          velocity = this.readByte();        // 0-100
+          panning = this.readByte();         // 0-200，100=居中
+          pitch = this.readShort();          // 音分（±100=半音）
+        }
+        notes.push({ tick, layer, instrument, key, velocity, panning, pitch });
+      }
+    }
+
+    // ---- 层 ----
+    const layers = [];
+    if (version === 0) {
+      // 经典格式：层带 jump short
+      while (this.pos + 2 <= this.view.byteLength) {
+        const jump = this.readShort();
+        if (jump === 0) break;
+        const lname = this.readString();
+        const vol = this.readByte();
+        layers.push({ name: lname, volume: vol, panning: 100 });
+      }
+      // 经典格式：元数据在层之后
+      name = this.readString();
+      author = this.readString();
+      origAuthor = this.readString();
+      description = this.readString();
+      tempo = this.readShort();
+      this.readByte(); this.readByte(); this.readByte();
+      this.readInt(); this.readInt(); this.readInt(); this.readInt(); this.readInt();
+      this.readString();
+    } else {
+      // 新格式：恰好 layerCount 条记录，无 jump
+      for (let i = 0; i < layerCount; i++) {
+        if (this.pos + 2 > this.view.byteLength) break;
+        const lname = this.readString();
+        let lock = 0;
+        if (version >= 4) lock = this.readByte();
+        const vol = this.readByte();
+        let pan = 100;
+        if (version >= 2) pan = this.readByte();
+        layers.push({ name: lname, lock, volume: vol, panning: pan });
+      }
+    }
+
+    // ---- 自定义乐器 ----
+    const customInstruments = [];
+    if (version >= 1 && this.pos + 1 <= this.view.byteLength) {
+      const count = this.readByte();
+      for (let i = 0; i < count; i++) {
+        if (this.pos + 2 > this.view.byteLength) break;
+        const iname = this.readString();
+        const ifile = this.readString();
+        const ikey = this.readByte();
+        const pressKey = this.readByte();
+        customInstruments.push({ name: iname, file: ifile, key: ikey, pressKey });
+      }
+    }
+
+    // ---- 计算每个音符的实际音量/声像（官方公式）----
+    for (const n of notes) {
+      const lyr = layers[n.layer];
+      const layerVol = lyr ? lyr.volume : 100;
+      const layerPan = lyr ? lyr.panning : 100;
+      n.vol = (layerVol * n.velocity) / 100;                            // 0-100
+      n.pan = layerPan === 100 ? n.panning : (layerPan + n.panning) / 2; // 0-200
+      // 自定义乐器：实际音高 = key + 乐器基准音(默认45) - 45
+      if (n.instrument >= 16) {
+        const ci = customInstruments[n.instrument - 16];
+        if (ci) n.key = n.key + ci.key - 45;
+        n.instrument = 0; // 用竖琴音色兜底
+      }
+    }
+
+    const maxTick = notes.length ? notes[notes.length - 1].tick : 0;
+    const songLength = Math.max(headerLen, maxTick);
+    return {
+      version, name, author, origAuthor, description,
+      tempo, tps: tempo / 100, notes, layers, customInstruments, songLength
+    };
+  }
+}
+</script>
+<script>
+// ============ 状态 ============
+let song = null;          // 解析后的歌曲
+
+function songDuration() { return song.songLength / song.tps; }
+
+// ============ UI ============
+const $ = id => document.getElementById(id);
+const dropZone = $("dropZone"), fileInput = $("fileInput");
+const infoPanel = $("infoPanel");
+const statusEl = $("status"), errorPanel = $("errorPanel");
+
+function setStatus(msg, cls) {
+  statusEl.textContent = msg || "";
+  statusEl.className = "status" + (cls ? " " + cls : "");
+}
+function showError(msg) {
+  errorPanel.textContent = msg;
+  errorPanel.classList.add("show");
+}
+function clearError() { errorPanel.classList.remove("show"); }
+
+dropZone.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", e => {
+  if (e.target.files.length) handleFile(e.target.files[0]);
+});
+["dragover", "dragenter"].forEach(ev =>
+  dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.add("drag-over"); })
+);
+["dragleave", "drop"].forEach(ev =>
+  dropZone.addEventListener(ev, e => { e.preventDefault(); dropZone.classList.remove("drag-over"); })
+);
+dropZone.addEventListener("drop", e => {
+  if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+});
+
+function fmtTime(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  return Math.floor(sec/60) + ":" + String(sec%60).padStart(2, "0");
+}
+
+function handleFile(file) {
+  clearError();
+  if (!file.name.toLowerCase().endsWith(".nbs")) {
+    showError("请选择 .nbs 格式的文件（Note Block Studio 歌曲文件）");
+    return;
+  }
+  setStatus("正在解析 " + file.name + " ...");
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      song = new NBSParser(reader.result).parse();
+      if (!song.notes.length) throw new Error("文件中没有音符数据");
+      showSongInfo(file.name);
+      setStatus("已加载，点击下方按钮导出 MIDI", "success");
+    } catch (err) {
+      console.error(err);
+      showError("解析失败：" + err.message + "（请确认这是有效的 NBS 文件）");
+      setStatus("");
+    }
+  };
+  reader.onerror = () => { showError("文件读取失败"); setStatus(""); };
+  reader.readAsArrayBuffer(file);
+}
+
+function showSongInfo(fileName) {
+  $("songTitle").textContent = song.name || fileName.replace(/\.nbs$/i, "");
+  $("songArtist").textContent = song.author ? "作者：" + song.author : "未知作者";
+  $("metaDuration").textContent = fmtTime(songDuration());
+  $("metaNotes").textContent = song.notes.length;
+  const insts = new Set(song.notes.map(n => n.instrument));
+  $("metaInstruments").textContent = insts.size;
+  $("metaTempo").textContent = song.tps.toFixed(2);
+  $("metaVersion").textContent = song.version;
+  infoPanel.classList.add("show");
+  btnExport.classList.add("show");
+}
+
+// ============ MIDI 导出 ============
+// 原版乐器 → GM 音色 / 打击乐映射
+const GM_PROGRAMS = { 0:0, 1:32, 5:25, 6:73, 7:9, 8:14, 9:13, 10:11, 12:58, 13:80, 14:105, 15:4 };
+const GM_DRUM_NOTES = { 2:36, 3:38, 4:37, 11:56 }; // 底鼓/军鼓/击掌/牛铃 → 通道10打击乐
+const MELODIC_CHANNELS = [0,1,2,3,4,5,6,7,8,10,11,12,13,14,15]; // 避开通道9（打击乐）
+
+function vlq(n) { // MIDI 变长数编码
+  const bytes = [n & 0x7F];
+  n >>= 7;
+  while (n > 0) { bytes.unshift((n & 0x7F) | 0x80); n >>= 7; }
+  return bytes;
+}
+
+function exportMidi() {
+  if (!song) return;
+  const tps = song.tps;
+  // 选择 PPQ：让 1 个 NBS tick 恰好对应 1 个 MIDI tick，且拍速微秒数 ≤ 3 字节
+  let ppq = 1, usec = Math.round(1000000 / tps);
+  for (const p of [960,720,480,360,240,180,120,90,60,48,30,24,12,6,3,2,1]) {
+    const v = Math.round(p * 1000000 / tps);
+    if (v <= 0xFFFFFF) { ppq = p; usec = v; break; }
+  }
+
+  // 分配通道与音色
+  const chMap = {};       // 乐器 → MIDI 通道
+  const programs = {};    // 通道 → GM 音色号
+  let chIdx = 0;
+  const events = [];      // {tick, order, bytes}
+  const DUR = 2;          // 音符持续 2 个 MIDI tick
+
+  for (const n of song.notes) {
+    let ch, midiNote;
+    const drum = GM_DRUM_NOTES[n.instrument];
+    if (drum != null) {
+      ch = 9;
+      midiNote = drum;
+    } else {
+      if (!(n.instrument in chMap)) {
+        chMap[n.instrument] = chIdx < MELODIC_CHANNELS.length ? MELODIC_CHANNELS[chIdx++] : 15;
+        programs[chMap[n.instrument]] = GM_PROGRAMS[n.instrument] != null ? GM_PROGRAMS[n.instrument] : 0;
+      }
+      ch = chMap[n.instrument];
+      // NBS 键号 0-87（0=A0）→ MIDI 音符号（A0=21），音分微调折算半音
+      midiNote = Math.round(n.key + 21 + (n.pitch || 0) / 100);
+      midiNote = Math.max(0, Math.min(127, midiNote));
+    }
+    const vel = Math.max(1, Math.min(127, Math.round((n.vol != null ? n.vol : 100) * 1.27)));
+    events.push({ tick: n.tick, order: 1, bytes: [0x90 | ch, midiNote, vel] });
+    events.push({ tick: n.tick + DUR, order: 0, bytes: [0x80 | ch, midiNote, 64] });
+  }
+  events.sort((a, b) => a.tick - b.tick || a.order - b.order);
+
+  // 组装轨道
+  const track = [];
+  const push = arr => track.push(...arr);
+  push([0x00, 0xFF, 0x51, 0x03, (usec >> 16) & 0xFF, (usec >> 8) & 0xFF, usec & 0xFF]); // 拍速
+  // 曲名
+  const titleBytes = Array.from(new TextEncoder().encode((song.name || "").slice(0, 100)));
+  push([0x00, 0xFF, 0x03, titleBytes.length, ...titleBytes]);
+  // 音色切换
+  for (const [chStr, prog] of Object.entries(programs)) {
+    push([0x00, 0xC0 | Number(chStr), prog]);
+  }
+  // 音符事件
+  let lastTick = 0;
+  for (const ev of events) {
+    push([...vlq(ev.tick - lastTick), ...ev.bytes]);
+    lastTick = ev.tick;
+  }
+  push([...vlq(0), 0xFF, 0x2F, 0x00]); // End of Track
+
+  // 组装文件头（Format 0，单轨）
+  const header = [
+    0x4D,0x54,0x68,0x64, 0,0,0,6, 0,0, 0,1, (ppq >> 8) & 0xFF, ppq & 0xFF,
+    0x4D,0x54,0x72,0x6B,
+    (track.length >>> 24) & 0xFF, (track.length >>> 16) & 0xFF,
+    (track.length >>> 8) & 0xFF, track.length & 0xFF
+  ];
+  const blob = new Blob([new Uint8Array([...header, ...track])], { type: "audio/midi" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = ((song.name || "song").replace(/[\\\/:*?"<>|]/g, "_")) + ".mid";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  setStatus("已导出 MIDI 文件：" + a.download, "success");
+}
+
+const btnExport = $("btnExport");
+btnExport.addEventListener("click", exportMidi);
+
+setStatus("");
+</script>
+</body>
+</html>
