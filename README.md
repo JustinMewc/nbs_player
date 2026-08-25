@@ -1,5 +1,13 @@
-# Welcome to GitHub Desktop!
+1.先解压nbs-player-1.0.zip
 
-This is your README. READMEs are where you can communicate what your project is and how to use it.
+2.打开nbs-player-1.0.zip里面的nbs-player-1.0文件夹
 
-Write your name on line 6, save it, and then head back to GitHub Desktop.
+3.打开nbs-player.html
+
+4.将nbs v5文件拖入虚线框或者点击上传(从Note Block Studio中导出,格式选V5)
+
+5.等待解析完成后点击导出MIDI文件(.mid)
+
+选你要导出到的文件夹名点保存即可。
+
+（全部运算在您的设备上运行，不会上传）
